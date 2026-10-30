@@ -198,12 +198,12 @@ pub fn resolve_nif_texture_path(nif_path: &str, scratch: &mut String) -> bool {
 
     let base = if starts_with_textures {
         let mut s = String::with_capacity(scratch.len());
-        s.push_str("Textures/");
+        s.push_str("Data Files/Textures/");
         s.push_str(&scratch[9..]);
         s
     } else {
         let mut s = String::with_capacity(9 + scratch.len());
-        s.push_str("Textures/");
+        s.push_str("Data Files/Textures/");
         s.push_str(scratch.as_str());
         s
     };
@@ -252,7 +252,7 @@ pub fn resolve_nif_model_path(model_path: &str, scratch: &mut String) -> bool {
 
     let cache_key = scratch.clone();
     let mut base = String::with_capacity(25 + scratch.len());
-    base.push_str("data/Data Files/Meshes/");
+    base.push_str("Data Files/Meshes/");
     base.push_str(scratch.as_str());
 
     #[cfg(target_arch = "wasm32")]
