@@ -1,0 +1,70 @@
+use bevy_asset::{Handle, LoadContext};
+use bevy_color::{Color, LinearRgba};
+use bevy_image::Image;
+use bevy_material::AlphaMode;
+use bevy_pbr::StandardMaterial;
+use nif::{
+    NiMaterialProperty, NiTexturingProperty, NiType, TextureMap, TextureSource, loader::Nif,
+};
+
+use crate::resolve_nif_texture_path;
+
+pub fn process_nitexturingproperty(
+    tex_prop: &NiTexturingProperty,
+    nif: &Nif,
+    load_context: &mut LoadContext,
+    scratch_string: &mut String,
+) -> Option<Handle<Image>> {
+    let mut texture_handle_opt: Option<Handle<Image>> = None;
+    let base_texture = tex_prop.texture_maps[0].as_ref().unwrap();
+    match base_texture {
+        TextureMap::Map(tex_map) => {
+            if let Some(tex_ni_type) = nif.objects.get(tex_map.texture.key) {
+                match tex_ni_type {
+                    NiType::NiSourceTexture(source_texture) => {
+                        match &source_texture.source {
+                            TextureSource::External(ext_path) => {
+                                //dbg!("loading");
+                                //dbg!(ext_path);
+                                let found = resolve_nif_texture_path(ext_path, scratch_string);
+                                if found {
+                                    texture_handle_opt = Some(load_context.load(&*scratch_string));
+                                }
+                            }
+                            TextureSource::Internal(_link) => {
+                                dbg!("Unimplemented!");
+                                //TODO::
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        TextureMap::BumpMap(_tex_bumpmap) => {
+            dbg!("Unimplemented!");
+        }
+    }
+    texture_handle_opt
+}
+pub fn process_nimaterialproperty(mat_prop: &NiMaterialProperty) -> StandardMaterial {
+    let mut material = StandardMaterial::default();
+    material.base_color = Color::srgb(
+        mat_prop.diffuse_color[0],
+        mat_prop.diffuse_color[1],
+        mat_prop.diffuse_color[2],
+    );
+    material.emissive = LinearRgba::rgb(
+        mat_prop.emissive_color[0],
+        mat_prop.emissive_color[1],
+        mat_prop.emissive_color[2],
+    );
+    material.metallic = 0.1;
+    material.perceptual_roughness = 1.0 - (mat_prop.shine / 100.0).clamp(0.0, 1.0);
+    material.alpha_mode = if mat_prop.alpha < 0.99 {
+        AlphaMode::Blend
+    } else {
+        AlphaMode::Opaque
+    };
+    material
+}

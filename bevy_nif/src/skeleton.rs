@@ -1,0 +1,193 @@
+use std::collections::HashMap;
+
+use bevy_ecs::entity::MapEntities;
+use bevy_ecs::reflect::ReflectComponent;
+use bevy_ecs::resource::Resource;
+use bevy_ecs::{component::Component, entity::Entity};
+use bevy_log::warn;
+use bevy_reflect::Reflect;
+
+#[derive(Resource, Default)]
+pub struct SkeletonMap {
+    pub entity_to_skeleton: HashMap<Entity, Skeleton>,
+}
+
+#[derive(Resource, Default)]
+pub struct SkeletonIdManager(u64);
+impl SkeletonIdManager {
+    pub fn next_id(&mut self) -> u64 {
+        self.0 += 1;
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
+pub struct BoneId(pub usize);
+
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component)]
+pub struct Skeleton {
+    /// Stores all bone data
+    #[entities] // Tells the derived mapper to map entities inside this collection
+    pub bones: Vec<BoneData>,
+    /// Lookup of bone ID by name
+    pub(crate) name_to_id: HashMap<String, BoneId>,
+    /// BoneIds of root bones
+    pub(crate) roots: Vec<BoneId>,
+}
+
+#[derive(Debug, Reflect, MapEntities)]
+pub struct BoneData {
+    pub id: BoneId,
+    pub name: String,
+    pub parent: Option<BoneId>,
+    pub children: Vec<BoneId>,
+    #[entities]
+    pub entity: Entity,
+}
+impl Skeleton {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_bone(&mut self, entity: Entity, name: String, parent_name: Option<&str>) -> BoneId {
+        if self.name_to_id.contains_key(&name) {
+            warn!("Bone with name '{}' already exists!", name);
+        }
+
+        let new_id = BoneId(self.bones.len());
+        let parent_id = parent_name.and_then(|p_name| self.name_to_id.get(p_name).copied());
+
+        let bone_data = BoneData {
+            id: new_id,
+            name: name.clone(),
+            parent: parent_id,
+            children: Vec::new(),
+            entity,
+        };
+        self.bones.push(bone_data);
+        self.name_to_id.insert(name, new_id);
+
+        // This bone says it has a parent
+        if let Some(p_id) = parent_id {
+            // Get its parent and add this bone as a child
+            if let Some(parent_node) = self.bones.get_mut(p_id.0) {
+                parent_node.children.push(new_id);
+            } else {
+                // This case should ideally not happen if parent_id is Some, otherwise where did we
+                // get the id from?
+                eprintln!(
+                    "Warning: Parent ID {:?} not found for bone {}",
+                    p_id, self.bones[new_id.0].name
+                );
+            }
+        } else {
+            self.roots.push(new_id);
+        }
+        new_id
+    }
+
+    pub fn get_bone_by_id(&self, id: BoneId) -> Option<&BoneData> {
+        self.bones.get(id.0)
+    }
+
+    pub fn get_bone_by_id_mut(&mut self, id: BoneId) -> Option<&mut BoneData> {
+        self.bones.get_mut(id.0)
+    }
+
+    pub fn get_bone_by_name(&self, name: &str) -> Option<&BoneData> {
+        self.name_to_id
+            .get(name)
+            .and_then(|id| self.get_bone_by_id(*id))
+    }
+
+    pub fn get_bone_by_name_mut(&mut self, name: &str) -> Option<&mut BoneData> {
+        self.name_to_id
+            .get(name)
+            .copied()
+            .and_then(move |id| self.get_bone_by_id_mut(id))
+    }
+
+    pub fn get_parent(&self, bone_id: BoneId) -> Option<&BoneData> {
+        self.get_bone_by_id(bone_id)
+            .and_then(|b| b.parent)
+            .and_then(|p_id| self.get_bone_by_id(p_id))
+    }
+
+    pub fn get_children(&self, bone_id: BoneId) -> Option<Vec<&BoneData>> {
+        self.get_bone_by_id(bone_id).map(|b| {
+            b.children
+                .iter()
+                .filter_map(|child_id| self.get_bone_by_id(*child_id))
+                .collect()
+        })
+    }
+    pub fn get_roots(&self) -> Vec<&BoneData> {
+        self.roots
+            .iter()
+            .filter_map(|root_id| self.get_bone_by_id(*root_id))
+            .collect()
+    }
+    pub fn get_all_children(&self, start_bone_name: &str) -> Vec<&BoneData> {
+        let mut children = Vec::new();
+        if let Some(start_bone_data) = self.get_bone_by_name(start_bone_name) {
+            let mut stack: Vec<BoneId> = Vec::new();
+
+            // Put the starting bone at the top of the stack
+            stack.push(start_bone_data.id);
+            children.push(start_bone_data);
+            while let Some(current_bone_id) = stack.pop() {
+                // The loop continues as long as there are items on the stack
+
+                if let Some(bone_data) = self.get_bone_by_id(current_bone_id) {
+                    // Add children to the stack for later processing.
+                    // To end up with a vec of children in their natural order (first child first),
+                    // we push them onto the stack in reverse order.
+                    // The last child pushed will be the first one popped.
+                    for &child_id in bone_data.children.iter().rev() {
+                        stack.push(child_id);
+                        children.push(self.get_bone_by_id(child_id).unwrap());
+                    }
+                } else {
+                    eprintln!(
+                        "Error: Bone with ID {:?} not found during iterative traversal.",
+                        current_bone_id
+                    );
+                }
+            }
+        }
+        children
+    }
+    pub fn is_descendant_of_or_is(&self, bone_name: &str, ancestor_name: &str) -> bool {
+        if bone_name == ancestor_name {
+            return true;
+        }
+
+        let mut current_bone_id_opt = self.name_to_id.get(bone_name).copied();
+
+        while let Some(current_bone_id) = current_bone_id_opt {
+            // Get the current bone's data
+            let current_bone_data = match self.get_bone_by_id(current_bone_id) {
+                Some(b) => b,
+                None => return false, // Should not happen if ID came from name_to_id
+            };
+
+            // Check parent
+            if let Some(parent_id) = current_bone_data.parent {
+                let parent_bone_data = match self.get_bone_by_id(parent_id) {
+                    Some(p) => p,
+                    None => return false, // Parent ID exists but no data, should not happen
+                };
+                if parent_bone_data.name == ancestor_name {
+                    return true;
+                }
+                current_bone_id_opt = Some(parent_id); // Move to the parent for next iteration
+            } else {
+                // No parent, we've reached a root without finding the bone we're searching for
+                return false;
+            }
+        }
+        // bone_name was not found in this skeleton's heirarchy
+        false
+    }
+}
